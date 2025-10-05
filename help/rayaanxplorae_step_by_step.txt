@@ -1,0 +1,214 @@
+RayaanXplorAE — Step‑by‑Step Setup & Migration Guide
+(Convex → Supabase + Stripe + GitHub)
+
+This plain‑text checklist consolidates everything we covered. Follow top‑to‑bottom.
+
+===============================================================================
+0) What you’ll have at the end
+===============================================================================
+• Your existing Chef/Convex Next.js site in GitHub.
+• Stripe Checkout working with a verified webhook.
+• Supabase Postgres hosting your data (orders/downloads; optionally carts).
+• Optional: a switchable adapter so you can run carts on Convex now and cut over
+  to Supabase when ready with one env var (CART_PROVIDER).
+
+Helpful files already generated for you:
+- supabase_schema.sql
+- DEPLOY_TO_GITHUB.md
+- MIGRATE_CONVEX_TO_SUPABASE.md
+- chef-convex-prompt.md
+- chef-convex-color-scheme.md
+
+===============================================================================
+1) Prerequisites (macOS commands shown; adjust for Windows/Linux as needed)
+===============================================================================
+• Install Apple Command Line Tools (fixes “Xcode alone is not sufficient”):
+  xcode-select --install
+
+• Homebrew (if you don’t have it):
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+• Node, pnpm, Git:
+  brew install node git
+  corepack enable    # enables pnpm/yarn shims
+  pnpm --version     # verify
+
+• Stripe CLI (for webhooks):
+  brew install stripe/stripe-cli/stripe
+
+• Supabase CLI (optional if you use only the cloud DB):
+  brew install supabase/tap/supabase
+
+• psql client (if you want to run .sql from the terminal):
+  brew install postgresql
+  psql --version
+
+• (Optional) Docker Desktop — only needed if you want local Supabase containers:
+  Install from https://docs.docker.com/desktop and start Docker.app
+
+===============================================================================
+2) Put your project on GitHub
+===============================================================================
+From your project folder:
+  git init
+  echo "node_modules\n.next\nout\n.env\n.env.*\n.vercel\n.supabase\ndist\ncoverage\n.DS_Store\n" >> .gitignore
+  git add .
+  git commit -m "chore: bootstrap RayaanXplorAE"
+  git remote add origin https://github.com/<you>/<repo>.git
+  git branch -M main
+  git push -u origin main
+
+If you get “failed to push some refs (non-fast-forward)”:
+  git fetch origin
+  git pull --rebase origin main
+  git push origin main
+(As a last resort only if remote can be overwritten: git push --force-with-lease origin main)
+
+===============================================================================
+3) Environment variables (.env.local)
+===============================================================================
+Create a file named .env.local at the repo root (never commit it):
+
+NEXT_PUBLIC_SITE_NAME=RayaanXplorAE
+SITE_URL=http://localhost:3000
+
+# Stripe
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...     # you’ll obtain this in step 6
+
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=https://<PROJECT-REF>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=ey...
+SUPABASE_SERVICE_ROLE_KEY=ey...     # SERVER ONLY (webhook/scripts)
+
+# (Optional) feature flag for a phased cutover:
+CART_PROVIDER=supabase              # or 'convex' if you keep carts on Convex for now
+
+===============================================================================
+4) Apply the Supabase schema
+===============================================================================
+Option A — Web UI (easiest): open Supabase → SQL Editor → paste contents of
+supabase_schema.sql → Run.
+
+Option B — Terminal with psql (cloud DB):
+  psql 'postgresql://postgres:<YOUR_PASSWORD>@db.<PROJECT-REF>.supabase.co:5432/postgres' -f supabase_schema.sql
+
+  NOTE on passwords with specials (!,@,&): wrap the whole URI in single quotes
+  OR URL‑encode the special characters (e.g., ! → %21).
+
+Option C — Supabase CLI to local containers (requires Docker):
+  supabase init
+  supabase start
+  psql -h localhost -p 54322 -U postgres -d postgres -f supabase_schema.sql
+
+RLS policy tip (if you saw “syntax error near ,,” earlier):
+  Use either a single FOR ALL policy with USING + WITH CHECK, or separate
+  policies per command (SELECT/INSERT/UPDATE/DELETE). (We included a fixed
+  example previously.)
+
+===============================================================================
+5) Choose your cart strategy (pick ONE for now)
+===============================================================================
+A) Keep carts on Convex (bridge now, migrate later)
+   • Leave your existing cart:get/add/update/remove in Convex.
+   • Checkout route: read cart from Convex → create Stripe session.
+   • Webhook: on checkout.session.completed → write orders & downloads to
+     Supabase; optionally clear the Convex cart via metadata.
+   • Pros: zero change to add‑to‑cart UX; lets you move fast.
+
+B) Move carts to Supabase (full migration now)
+   • Create a session cookie helper (guest carts): /lib/session.ts
+   • Create Supabase clients: /lib/supabase.ts
+        - supabasePublic (anon) for read‑only if needed
+        - supabaseService (service role) for server‑only writes
+   • Implement cart data layer using service role only (server):
+        /lib/cart.ts with: getOrCreateCartBySession, getCartItems,
+        addToCart, updateQty, removeFromCart, clearCart
+   • Implement API routes your UI calls:
+        /app/api/cart (GET) → returns items + subtotal
+        /app/api/cart/add (POST)
+        /app/api/cart/update-qty (POST)
+        /app/api/cart/remove (POST)
+   • Update checkout route to read Supabase cart and pass metadata (cartId).
+
+(You can also implement a cartAdapter and switch by CART_PROVIDER without
+touching UI components.)
+
+===============================================================================
+6) Stripe webhook (create + verify)
+===============================================================================
+Create /app/api/webhooks/stripe/route.ts that:
+  • Verifies signatures with stripe.webhooks.constructEvent
+  • On checkout.session.completed:
+      – Fetches line items
+      – Inserts a row into orders, rows into order_items
+      – Inserts download tokens (expires in ~72h)
+      – (Optional) clears the cart (Convex or Supabase), using session.metadata
+
+Local testing:
+  pnpm dev
+  stripe login
+  stripe listen --forward-to localhost:3000/api/webhooks/stripe
+  # copy the printed whsec_... into STRIPE_WEBHOOK_SECRET in .env.local
+  stripe trigger checkout.session.completed
+
+Production:
+  • In Stripe Dashboard → Developers → Webhooks → Add endpoint:
+    https://<yourdomain>/api/webhooks/stripe
+    Select events you use (e.g., checkout.session.completed)
+  • Put the new live signing secret in your production env vars.
+
+===============================================================================
+7) Run locally
+===============================================================================
+Install deps:
+  pnpm install
+If you see “Command \"dev\" not found”, add this to package.json scripts:
+  "dev": "next dev"
+Then:
+  pnpm dev
+Open http://localhost:3000
+
+===============================================================================
+8) Deployment checklist
+===============================================================================
+• Set all env vars on your host (Vercel/Netlify/Fly/etc.).
+• Confirm Stripe live keys (not test) for production.
+• Stripe Dashboard → Webhooks: make sure live endpoint exists and is green.
+• SITE_URL set to your real domain.
+• (Optional) GitHub Actions CI builds successfully.
+
+===============================================================================
+9) Common troubleshooting quick‑wins
+===============================================================================
+• Git push rejected (non‑fast‑forward):
+  git fetch origin && git pull --rebase origin main && git push origin main
+
+• stripe: command not found → install Stripe CLI (brew install stripe/stripe-cli/stripe)
+
+• “Xcode alone is not sufficient on Sequoia” → xcode-select --install
+
+• supabase: command not found → brew install supabase/tap/supabase
+  (not needed if you only use the cloud DB and SQL Editor)
+
+• Docker daemon not running → open -a "Docker" (only required for local Supabase)
+
+• psql: command not found → brew install postgresql
+
+• bash: event not found (password had !) → wrap URI in single quotes or URL‑encode (! → %21)
+
+• pnpm install “does nothing” → ensure you’re in the app folder with package.json;
+  if monorepo, check pnpm-workspace.yaml; try pnpm install --no-frozen-lockfile
+
+===============================================================================
+10) Final test flow
+===============================================================================
+1. Add a product to cart → check /api/cart returns items and subtotal.
+2. Start Stripe listener → stripe listen --forward-to localhost:3000/api/webhooks/stripe
+3. Checkout → redirected to Stripe → complete with test card (4242...).
+4. Webhook fires → orders and downloads appear in Supabase.
+5. Success page shows tokenized download links (valid for ~72h).
+6. Cart gets cleared after success (Supabase or Convex depending on your path).
+
+That’s it. Switch CART_PROVIDER to “supabase” when you’re ready to fully cut over.
+Keep the adapter around for easy fallback.

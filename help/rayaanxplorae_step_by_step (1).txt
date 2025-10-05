@@ -1,0 +1,11 @@
+(See full detailed instructions in prior message; condensed below)
+
+1) Prereqs: Xcode CLT, Homebrew, Node, pnpm, Git, Stripe CLI, (optional) Supabase CLI + Docker, psql.
+2) GitHub: init, .gitignore, first commit, add origin https://github.com/jriizzyy/rayaanxplorae.git, push main.
+3) .env.local: Stripe keys, Supabase keys, CART_PROVIDER flag.
+4) Apply schema: use Supabase SQL editor or psql with supabase_schema.sql.
+5) Cart strategy: keep in Convex now or move to Supabase with /lib/session.ts, /lib/supabase.ts, /lib/cart.ts + API routes.
+6) Webhook: implement /api/webhooks/stripe; verify, insert orders, downloads, clear cart.
+7) Run: pnpm install; add "dev": "next dev" if missing; pnpm dev.
+8) Deploy: set env on host; Stripe live webhook; SITE_URL; CI optional.
+Troubleshooting: PAT/403, stripe/supabase/psql missing, Docker not running, bash '!' issue, pnpm workspace, etc.

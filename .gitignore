@@ -1,1 +1,10 @@
-node_modules\n.next\nout\n.env\n.env.*\n.vercel\n.supabase\ndist\ncoverage\n.DS_Store\n
+node_modules
+.next
+out
+.env
+.env.*
+.vercel
+.supabase
+dist
+coverage
+.DS_Store
